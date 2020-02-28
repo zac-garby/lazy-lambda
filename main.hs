@@ -28,6 +28,7 @@ instance Show Expr where
           collect (App x y) = collect x ++ [y]
           collect x = [x]
   show (Abs x e) = "λ" ++ x ++ "." ++ show e
+  show (Ptr n) = "&" ++ show n
   show (Let x e Nothing) = "let " ++ x ++ " = " ++ show e
   show (Let x e (Just b)) = "let " ++ x ++ " = " ++ show e ++ " in " ++ show b
 
@@ -85,46 +86,48 @@ bracket e = do
   char ')'
   return x
 
+reducible :: Expr -> State Env Bool
+reducible (Var x) = do
+  (_, _, vars) <- S.get
+  return $ M.member x vars
+reducible (App (Abs _ _) _) = return True
+reducible (App a b) = (||) <$> reducible a <*> reducible b
+reducible (Abs _ _) = return False
+reducible (Ptr _) = return True
+reducible (Let x e _) = return True
+
 eval' :: Expr -> State Env Expr
 eval' (Var x) = do
   (_, _, vars) <- S.get
-  return $ case M.lookup x vars of
-    Nothing -> Var x
-    Just e -> e
-eval' (App e1 e2) = do
-  e1' <- fullEval' e1
-  case e1' of
-    Abs v b -> return $ sub v e2 b
-    _ -> return $ App e1' e2
+  return $ fromMaybe (Var x) $ M.lookup x vars
+eval' (App (Abs x b) e) = return $ sub x e b
+eval' (App a b) = do
+  ra <- reducible a
+  rb <- reducible b
+  if ra then eval' a >>= \a' -> return (App a' b)
+  else if rb then eval' b >>= \b' -> return (App a b')
+  else undefined
 eval' e@(Abs _ _) = return e
-eval' (Ptr p) = do
-  (ptrs, _, _) <- S.get
-  return $ fromJust (M.lookup p ptrs)
-eval' (Let v e Nothing) = do
-  S.modify $ \(ps, n, vs) -> (ps, n, M.insert v e vs)
-  return e
-eval' (Let v e (Just b)) = do
-  old <- S.get
-  S.modify $ \(ps, n, vs) -> (ps, n, M.insert v e vs)
-  r <- fullEval' b
-  S.put old
-  return r
+eval' (Let x e Nothing) = do
+  r <- reducible e
+  if r then eval' e >>= \e' -> return (Let x e' Nothing)
+  else do
+    (ps, n, vs) <- S.get
+    let vs' = M.insert x e vs
+    S.put (ps, n, vs')
+    return e
+eval' (Let x e (Just b)) = return $ sub x e b
 
-fullEval' = whileChangeM eval'
+fullEval' :: Expr -> State Env Expr
+fullEval' e = do
+  r <- reducible e
+  if r then eval' e >>= fullEval' else return e
 
 eval :: Expr -> Expr
-eval e = S.evalState (whileChangeM eval' e) (mempty, 0, mempty)
+eval e = S.evalState (fullEval' e) (mempty, 0, mempty)
 
 evalS :: String -> Expr
 evalS = eval . lam
-
-whileChangeM :: (Eq a, Monad m) => (a -> m a) -> a -> m a
-whileChangeM t s = do
-  s' <- t s
-  if s == s' then
-    return s'
-  else
-    whileChangeM t s'
 
 countVars :: Var -> Expr -> Int
 countVars v (Var x) = fromEnum (v == x)
@@ -163,7 +166,7 @@ repl env = do
     [] -> putStrLn "invalid syntax" >> repl env
     xs -> case last xs of
             (e, "") -> do
-              let (e', env') = S.runState (whileChangeM eval' e) env
+              let (e', env') = S.runState (fullEval' e) env
               print e'
               repl env'
             _ -> putStrLn "invalid syntax: garbage after input" >> repl env
