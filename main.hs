@@ -124,7 +124,7 @@ fullEval' e = do
   if r then eval' e >>= fullEval' else return e
 
 eval :: Expr -> Expr
-eval e = S.evalState (fullEval' e) (mempty, 0, mempty)
+eval e = S.evalState (fullEval' e) stdlib
 
 evalS :: String -> Expr
 evalS = eval . lam
@@ -155,8 +155,21 @@ free (Ptr n) = error $ "can't get free variables of a pointer " ++ show n
 isFree :: Var -> Expr -> Bool
 isFree v e = v `elem` free e
 
+stdlib :: Env
+stdlib = (mempty, 0, fns)
+  where fns = M.fromList $ [ ("add",   lam "\\a.\\b.\\f.\\x.a f (b f x)")
+                           , ("pair",  lam "\\x.\\y.\\z.z x y")
+                           , ("fst",   lam "\\p.p (\\x.\\y.x)")
+                           , ("snd",   lam "\\p.p (\\x.\\y.y)")
+                           , ("true",  lam "\\x.\\y.x")
+                           , ("false", lam "\\x.\\y.y")
+                           , ("and",   lam "\\a.\\b.a b a")
+                           , ("or",    lam "\\a.\\b.a a b")
+                           , ("not",   lam "\\a.a false true")
+                           ]
+
 main :: IO ()
-main = void $ repl (mempty, 0, mempty)
+main = void $ repl stdlib
 
 repl :: Env -> IO Env
 repl env = do
